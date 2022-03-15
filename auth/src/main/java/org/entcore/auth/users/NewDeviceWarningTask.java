@@ -26,15 +26,8 @@ import io.vertx.core.json.JsonObject;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
-import io.vertx.core.buffer.Buffer;
 import io.vertx.core.eventbus.Message;
 
-import io.reactiverse.pgclient.PgClient;
-import io.reactiverse.pgclient.PgPool;
-import io.reactiverse.pgclient.PgPoolOptions;
-import io.reactiverse.pgclient.PgRowSet;
-import io.reactiverse.pgclient.Row;
-import io.reactiverse.pgclient.Tuple;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -52,6 +45,12 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 
 import fr.wseduc.webutils.email.EmailSender;
+import io.vertx.pgclient.PgConnectOptions;
+import io.vertx.pgclient.PgPool;
+import io.vertx.sqlclient.PoolOptions;
+import io.vertx.sqlclient.Row;
+import io.vertx.sqlclient.RowSet;
+import io.vertx.sqlclient.Tuple;
 import org.entcore.common.neo4j.Neo4j;
 import org.entcore.common.http.request.JsonHttpServerRequest;
 
@@ -97,7 +96,7 @@ public class NewDeviceWarningTask implements Handler<Long>
 
     private EmailSender sender;
     private String mailFrom;
-    private PgClient pgClient = null;
+    private PgPool pgClient = null;
     private String platformId;
     private String adminFilter;
     private int scoreThreshold;
@@ -115,14 +114,15 @@ public class NewDeviceWarningTask implements Handler<Long>
 			final JsonObject eventStorePGConfig = eventStoreConfig.getJsonObject("postgresql");
 			if (eventStorePGConfig != null)
             {
-				final PgPoolOptions options = new PgPoolOptions()
+				final PgConnectOptions options = new PgConnectOptions()
 					.setPort(eventStorePGConfig.getInteger("port", 5432))
 					.setHost(eventStorePGConfig.getString("host"))
 					.setDatabase(eventStorePGConfig.getString("database"))
 					.setUser(eventStorePGConfig.getString("user"))
-					.setPassword(eventStorePGConfig.getString("password"))
+					.setPassword(eventStorePGConfig.getString("password"));
+                final PoolOptions poolOptions = new PoolOptions()
 					.setMaxSize(eventStorePGConfig.getInteger("pool-size", 5));
-				this.pgClient = PgClient.pool(vertx, options);
+				this.pgClient = PgPool.pool(vertx, options, poolOptions);
 			}
 		}
 
@@ -159,10 +159,10 @@ public class NewDeviceWarningTask implements Handler<Long>
                                     " WHERE e." + PLATFORM_ID_FIELD + " = $1 AND " + this.adminFilter +
                                     " AND c." + LOGIN_ID_FIELD + " IS NULL" +
                                     " LIMIT $2";
-        this.pgClient.preparedQuery(getNewLoginEvents, Tuple.of(this.platformId, this.batchLimit), new Handler<AsyncResult<PgRowSet>>()
+        this.pgClient.preparedQuery(getNewLoginEvents).execute(Tuple.of(this.platformId, this.batchLimit), new Handler<AsyncResult<RowSet<Row>>>()
         {
             @Override
-            public void handle(AsyncResult<PgRowSet> pgRes)
+            public void handle(AsyncResult<RowSet<Row>> pgRes)
             {
                 if(pgRes.succeeded() == false)
                 {
@@ -242,10 +242,10 @@ public class NewDeviceWarningTask implements Handler<Long>
                                         " WHERE e." + PLATFORM_ID_FIELD + " = $1 AND " + USER_ID_FIELD + " = ANY($2)";
         Tuple userIdsTuple = Tuple.of(platformId);
         userIdsTuple.addStringArray(users.keySet().toArray(new String[users.keySet().size()]));
-        this.pgClient.preparedQuery(getKnownConnections, userIdsTuple, new Handler<AsyncResult<PgRowSet>>()
+        this.pgClient.preparedQuery(getKnownConnections).execute(userIdsTuple, new Handler<AsyncResult<RowSet<Row>>>()
         {
             @Override
-            public void handle(AsyncResult<PgRowSet> pgRes)
+            public void handle(AsyncResult<RowSet<Row>> pgRes)
             {
                 if(pgRes.succeeded() == false)
                 {
@@ -299,10 +299,10 @@ public class NewDeviceWarningTask implements Handler<Long>
                         }
                     }
 
-                    pgClient.preparedBatch(insertNewConnections, insertTuples, new Handler<AsyncResult<PgRowSet>>()
+                    pgClient.preparedQuery(insertNewConnections).executeBatch(insertTuples, new Handler<AsyncResult<RowSet<Row>>>()
                     {
                         @Override
-                        public void handle(AsyncResult<PgRowSet> pgRes)
+                        public void handle(AsyncResult<RowSet<Row>> pgRes)
                         {
                             if(pgRes.succeeded() == false)
                             {
@@ -352,10 +352,10 @@ public class NewDeviceWarningTask implements Handler<Long>
         Tuple removeUsersTuple = Tuple.of(this.platformId);
         removeUsersTuple.addStringArray(userIds);
 
-        this.pgClient.preparedQuery(removeKnownDevices, removeUsersTuple, new Handler<AsyncResult<PgRowSet>>()
+        this.pgClient.preparedQuery(removeKnownDevices).execute(removeUsersTuple, new Handler<AsyncResult<RowSet<Row>>>()
         {
             @Override
-            public void handle(AsyncResult<PgRowSet> pgRes)
+            public void handle(AsyncResult<RowSet<Row>> pgRes)
             {
                 if(pgRes.succeeded() == false)
                     log.error("Failed to remove known devices for users " + userIds);
@@ -363,7 +363,7 @@ public class NewDeviceWarningTask implements Handler<Long>
         });
     }
 
-    private JsonArray pgRowSetToJsonArray(PgRowSet rows)
+    private JsonArray pgRowSetToJsonArray(RowSet<Row> rows)
     {
         final List<String> columns = rows.columnsNames();
         final JsonArray res = new JsonArray();

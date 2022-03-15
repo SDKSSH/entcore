@@ -28,14 +28,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collector;
 import java.util.stream.Collectors;
 
+import io.vertx.pgclient.PgConnectOptions;
+import io.vertx.pgclient.PgPool;
+import io.vertx.sqlclient.PoolOptions;
+import io.vertx.sqlclient.Row;
 import org.entcore.common.sql.Sql;
 import org.entcore.common.validation.ValidationException;
 
 import fr.wseduc.webutils.Either;
-import io.reactiverse.pgclient.PgClient;
-import io.reactiverse.pgclient.PgPool;
-import io.reactiverse.pgclient.PgPoolOptions;
-import io.reactiverse.pgclient.Row;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
@@ -70,14 +70,15 @@ public class PostgresqlEventStore extends GenericEventStore {
 			platform = eventStoreConfig.getString("platform");
 			final JsonObject eventStorePGConfig = eventStoreConfig.getJsonObject("postgresql");
 			if (eventStorePGConfig != null) {
-				final PgPoolOptions options = new PgPoolOptions()
+				final PgConnectOptions options = new PgConnectOptions()
 					.setPort(eventStorePGConfig.getInteger("port", 5432))
 					.setHost(eventStorePGConfig.getString("host"))
 					.setDatabase(eventStorePGConfig.getString("database"))
 					.setUser(eventStorePGConfig.getString("user"))
-					.setPassword(eventStorePGConfig.getString("password"))
+					.setPassword(eventStorePGConfig.getString("password"));
+				final PoolOptions poolOptions = new PoolOptions()
 					.setMaxSize(eventStorePGConfig.getInteger("pool-size", 5));
-				pgClient = PgClient.pool(vertx, options);
+				pgClient = PgPool.pool(vertx, options, poolOptions);
 				listKnownEvents(ar -> {
 					if (ar.succeeded()) {
 						knownEvents = ar.result();
@@ -102,7 +103,7 @@ public class PostgresqlEventStore extends GenericEventStore {
 				"WHERE table_schema = 'events' and table_name LIKE '%_events'";
 		final Collector<Row, ?, Set<String>> collector = Collectors.mapping(
 			row -> row.getString("table_name").replace("_events", "").toUpperCase(), Collectors.toSet());
-		pgClient.query(listEventsTypesQuery, collector, ar -> {
+		pgClient.query(listEventsTypesQuery).collecting(collector).execute(ar -> {
 			if (ar.succeeded()) {
 				handler.handle(Future.succeededFuture(ar.result().value()));
 			} else {
@@ -188,7 +189,7 @@ public class PostgresqlEventStore extends GenericEventStore {
 			}
 		}
 		final String query = Sql.insertQuery(tableName, e);
-		pgClient.query(query, ar -> {
+		pgClient.query(query).execute(ar -> {
 			if (ar.succeeded()) {
 				handler.handle(new Either.Right<String, Void>(null));
 			} else {
